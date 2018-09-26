@@ -1,2 +1,2 @@
-# Repro_PMID_29940028
-Reproducing An optimized methodology for whole genome sequencing of RNA respiratory viruses from nasopharyngeal aspirates
+# Repro_PMID_29795788
+Reproducing Viromic Analysis of Wastewater Input to a River Catchment Reveals a Diverse Assemblage of RNA Viruses
