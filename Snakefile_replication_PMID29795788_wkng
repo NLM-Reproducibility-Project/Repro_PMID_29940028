@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+# Author: BBallew
+
+import datetime
+
+
+adapterFile = 'refs/contaminating_primers.fasta'
+sampleFile = '/home/ubuntu/sample_manifest'
+inDir = '/home/ubuntu/data/'
+dt = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+outDir = '/home/ubuntu/pipeline_' + dt + '/'
+posCtrl = '/home/ubuntu/refs/NC_016854_pos_ctrl.fasta'
+negCtrl = ''
+contamFile = ''
+
+sampleDict = {}
+with open(sampleFile) as f:
+    for line in f:
+        (sample, read1, read2) = line.split()
+        sampleDict[sample] = read1, read2
+
+def get_read1_fastq(wildcards):
+    (read1, read2) = sampleDict[wildcards.sample]
+    return inDir + read1
+
+def get_read2_fastq(wildcards):
+    (read1, read2) = sampleDict[wildcards.sample]
+    return inDir + read2
+
+
+# singularity:
+#     ''
+
+rule all:
+    input: 
+        expand(outDir + 'quality_trimming_prinseq/{sample}_r_1.fastq', sample=sampleDict.keys()),
+        expand(outDir + 'quality_trimming_prinseq/{sample}_r_2.fastq', sample=sampleDict.keys())
+        # expand(outDir + 'quality_trimming_sickle/{sample}_r1.fastq', sample=sampleDict.keys()),
+        # expand(outDir + 'quality_trimming_sickle/{sample}_r2.fastq', sample=sampleDict.keys())
+        # expand(outDir + 'adapter_trimmed/{sample}_r1.fastq', sample=sampleDict.keys()),
+        # expand(outDir + 'adapter_trimmed/{sample}_r2.fastq', sample=sampleDict.keys())
+
+rule adapter_trimming_r1:
+    '''
+    Raw fastq files were trimmed to remove Illumina adapters using Cutadapt version 1.2.1 with option -O 3 (77) and Sickle version 1.200 with a minimum quality score of 20 (78).
+    '''
+    input:
+        a = adapterFile,
+        i = get_read1_fastq
+    output:
+        outDir + 'adapter_trimmed/{sample}_r1.fastq'
+    singularity:
+        'docker://stevetsa/virustools:latest'
+    shell:
+        'cutadapt -a file:{input.a} -O3 -o {output} {input.i}'
+
+rule adapter_trimming_r2:
+    '''
+    Raw fastq files were trimmed to remove Illumina adapters using Cutadapt version 1.2.1 with option -O 3 (77) and Sickle version 1.200 with a minimum quality score of 20 (78).
+    '''
+    input:
+        a = adapterFile,
+        i = get_read2_fastq
+    output:
+        outDir + 'adapter_trimmed/{sample}_r2.fastq'
+    singularity:
+        'docker://stevetsa/virustools:latest'
+    shell:
+        'cutadapt -a file:{input.a} -O3 -o {output} {input.i}'
+
+rule quality_trimming_sickle:
+    '''
+    Raw fastq files were trimmed to remove Illumina adapters using Cutadapt version 1.2.1 with option -O 3 (77) and Sickle version 1.200 with a minimum quality score of 20 (78).
+    '''
+    input:
+        r1 = outDir + 'adapter_trimmed/{sample}_r1.fastq',
+        r2 = outDir + 'adapter_trimmed/{sample}_r2.fastq'
+    output:
+        r1 = outDir + 'quality_trimming_sickle/{sample}_r1.fastq',
+        r2 = outDir + 'quality_trimming_sickle/{sample}_r2.fastq',
+        s = outDir + 'quality_trimming_sickle/{sample}_singles.fastq'
+    singularity:
+        'docker://stevetsa/virustools:latest'
+    shell:
+        'sickle pe -f {input.r1} -r {input.r2} -t sanger -o {output.r1} -p {output.r2} -s {output.s} -q 20'
+
+rule quality_trimming_prinseq:
+    '''
+    Further quality control was performed with Prinseq-lite (79) with the following parameters: minimum read length of 35, GC percentage between 5 and 95%, minimum mean quality of 25, dereplication (removal of identical reads, leaving 1 copy), and removal of tails of a minimum of 5 poly(N) sequences from 3′ and 5′ ends of reads.
+    '''
+    input:
+        r1 = outDir + 'quality_trimming_sickle/{sample}_r1.fastq',
+        r2 = outDir + 'quality_trimming_sickle/{sample}_r2.fastq'
+    output:
+        r1 = outDir + 'quality_trimming_prinseq/{sample}_r_1.fastq',
+        r2 = outDir + 'quality_trimming_prinseq/{sample}_r_2.fastq',
+    params:
+        out_good = outDir + 'quality_trimming_prinseq/{sample}_r'
+    singularity:
+        'docker://stevetsa/virustools:latest'
+    shell:
+        'perl /opt/prinseq-lite-0.20.4/prinseq-lite.pl -fastq {input.r1} -fastq2 {input.r2} -min_len 35 -range_gc 5-95 -derep 1 -trim_ns_left 5 -trim_ns_right 5 -out_good {params.out_good} -out_bad null'
+
+############################################################################################################################################
+####################   From here on, the pipeline has not been tested.  ####################################################################
+############################################################################################################################################
+
+rule concat_refs:
+    input:
+        posCtrl, negCtrl, contamFile
+    output:
+        outDir + 'refs/pos_neg_contam.fa'
+    shell:
+        'cat {input} > {output}'
+
+rule index_refs:
+    input:
+        outDir + 'refs/pos_neg_contam.fa'
+    output:
+        outDir + 'refs/contam_ref.1.bt2',
+        outDir + 'refs/contam_ref.2.bt2',
+        outDir + 'refs/contam_ref.3.bt2',
+        outDir + 'refs/contam_ref.4.bt2',
+        outDir + 'refs/contam_ref.rev.1.bt2',
+        outDir + 'refs/contam_ref.rev.2.bt2'
+    singularity:
+        'docker://stevetsa/virustools:latest'
+    params:
+        base = outDir + 'refs/contam_ref'
+    shell:
+        'bowtie2-build {input} {params.base}'
+
+rule subtract_contam_reads:
+    '''
+    Then, bowtie2 (80) was used for each sample to subtract the reads that mapped to the positive-control, negative-control, or contaminant file. (Note - the author provided the contaminating reads file upon request.)
+    '''
+    input:
+        r1 = outDir + 'quality_trimming_prinseq/{sample}_r_1.fastq',
+        r2 = outDir + 'quality_trimming_prinseq/{sample}_r_2.fastq',
+        ref = outDir + 'refs/pos_neg_contam.fa',
+        i1 = outDir + 'refs/contam_ref.1.bt2',
+        i2 = outDir + 'refs/contam_ref.2.bt2',
+        i3 = outDir + 'refs/contam_ref.3.bt2',
+        i4 = outDir + 'refs/contam_ref.4.bt2',
+        i5 = outDir + 'refs/contam_ref.rev.1.bt2',
+        i6 = outDir + 'refs/contam_ref.rev.2.bt2'
+    output:
+        un = outDir + 'subtract_contam/uncontam_{sample}.fq',
+        al = outDir + 'subtract_contam/contam_{sample}.fq'
+    singularity:
+        'docker://stevetsa/virustools:latest'
+    shell:
+        'bowtie2 -x {input.ref} -1 {input.r1} -2 {input.r1} -S {output.al} --un-conc {output.un}'
+
+rule assemble_remaining_reads:
+    '''
+    The unmapped reads were used for assembly with SPAdes version 3.9.0, with k-mer values of 21, 31, 41, 51, 61, and 71 and the options --careful and a minimum coverage of 5 reads per contig (81).
+    '''
+    input:
+        outDir + 'subtract_contam/uncontam_{sample}.fq'
+    output:
+        outDir + 'assembly/{sample}/scaffolds.fasta',
+        outDir + 'assembly/{sample}/contigs.fasta',
+        outDir + 'assembly/{sample}/assembly_graph.gfa',
+        outDir + 'assembly/{sample}/assembly_graph.fastg',
+        outDir + 'assembly/{sample}/contigs.paths',
+        outDir + 'assembly/{sample}/scaffolds.paths'
+    singularity:
+        'docker://stevetsa/virustools:latest'
+    params:
+        o = outDir
+    shell:
+        'spades.py -o {params.o} --careful --12 {input} -k 21,31,41,51,61,71 --cov-cutoff 5'
+
+# rule :
+#     '''
+#     '''
+#     input:
+#     output:
+#     shell:
+# 
+# rule :
+#     '''
+#     '''
+#     input:
+#     output:
+#     shell:
+# 
+# rule :
+#     '''
+#     '''
+#     input:
+#     output:
+#     shell:
+
+
+
+
+
+
+
+
+
