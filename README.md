@@ -28,4 +28,4 @@ Restart VM
       ```
 - To run: 
   `snakemake -s scripts/Snakefile_replication_PMID29795788 --use-singularity --cores 16`
-- After running, look for output in pipeline_<datetime>
+- After running, look for output in pipeline_\<datetime\>
